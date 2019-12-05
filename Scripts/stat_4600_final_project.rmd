@@ -1,0 +1,547 @@
+---
+title: "Exploring the Accuracy of Density-Based Clustering in the Clinical Setting"
+author: "Brandon Kozak"
+output:
+  html_document:
+    df_print: paged
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+    code_folding: hide
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE)
+```
+
+# 0.0 Set up
+
+## 0.1 Packages
+
+```{r}
+library(tidyverse)
+library(BiocManager)
+library(here)
+library(dbscan)
+library(rgl)
+library(car)
+library(BBmisc)
+library(kableExtra)
+library(tableone)
+```
+
+## 0.2 Data
+
+```{r}
+heart = read_csv(here::here("Data","heart.csv"))
+```
+
+# 1.0: Introduction
+
+## 1.1: What is clustering and why do it?
+
+Clustering is a unsupervised explanatory data mining technique. Effectively this means two things:
+
+* 1.) We don't use any labels in our data when exploring.
+* 2.) We are looking for patterns in our data, either brand new ones, or simply to verify pre-existing ones.
+
+That being said, clustering is particularly useful when we suspect that a latent (hidden) variable exists in our data and we wish to get a better understanding on how it relates back to the original data.
+
+## 1.2: A common and simple approach to clustering
+
+There are many ways to go about clustering in terms of a workflow, here I'll outline the most simple approach.
+
+**The choice of variables**
+
+First we must decide on what variables we are going to use to cluster.
+
+Typically this choice is made on a low dimension (2 or 3) of variables that make sense for your data. For example:
+
+* Risk factors for data related to diseases.
+* Physical characteristic of a certain species.
+
+**The analysis that follows**
+
+Once we have the clusters, we can test the proportions of other key variables such as:
+
+* Proportion of patients who have diabetes per cluster.
+* Proportion of species who have a rare phenotype.
+
+## 1.3: Types of clustering
+
+In general it is not easy to define a cluster, as a result, many types of clustering have been developed.
+
+**Centroid based clustering**
+
+In centroid clustering we first choose the number of clusters and then optimize the clusters such that each center of each cluster is assigned a set of points that minimizes the squared distance to each point from the clusters center.
+
+Common algorithms include: k-means, k-medoids, and k-medians
+
+**Hierarchical clustering**
+
+In hierarchical clustering we aim to form a hierarchy by using both a distance measure and a linkage criteria. 
+
+The end result is a tree of clusters that can be visualized with a dendrogram.
+
+Common algorithms include: single-link, complete-link, and Ward.
+  
+**Distribution-based clustering**
+
+With distribution clustering we use distribution models as a baseline to form clusters. That is, we form a cluster based on how close a cluster of points fits a known distribution.
+
+A common approach is the expectation-maximization (EM) algorithm where the assumption of Gaussian distributions is used.
+
+**Density-based clustering**
+
+In density-based clustering we don't need to supply the number of clusters but rather relies on D-dimensional spheres to iteratively construct clusters.
+
+Density-based spatial clustering of applications with noise (DBSCAN) is the most commonly used algorithm.
+
+This report aims to verify the accuracy of DBSCAN, particularity when applied to clinical data.
+
+# 2.0: Some Background Information
+
+## 2.1: The terminology of density based clustering
+
+Before we get into the details of DBSCAN, we must first discuss terminology used by density based clustering in general.
+
+First, assume we take $D$ variables to cluster, that is, we are clustering in a $D$ dimensional space.
+
+Given this, density based clustering depends on two parameters:
+
+* **epsilon $(\epsilon)$** is the radius of a D-dimensional sphere centered at some point $p$.
+  * The area taken up by this sphere is known as the **neighborhood** of $p$.
+* **minPts** is the minimum number of points that a neighborhood of $p$ will require to construct a cluster centered at p.
+
+Each point is then classified into one of four categories:
+
+* We say a point $p$ is a **core point** if at least minPts points are within distance $\epsilon$ of it, including $p$
+* We say a point $q$ is **directly reachable** from $p$ if $q$ is within distance $\epsilon$ from the core point $p$.
+* We say a point $q$ is **reachable** from $p$ if there exists a path of points $p_1,...,p_n$ such that:
+  * $p_1 = p$
+  * $p_n = q$
+  * The point $p_{i+1}$ is directly reachable from the point $p_i$
+* We say a point $p$ is an outlier/noise point if it is not reachable from any other point.
+
+
+**Figure 1**: Classification of density based points 
+
+![](`r here::here("Figs","Class_points.png")`)
+
+## 2.2: The DBSCAN algorithm
+
+We are at the point where we can talk about how the DBSCAN algorithm works. If look at it from an abstract point of view, we can break the algorithm into three main steps:
+
+* 1. Start at a random point $p$:
+  * If the neighborhood of $p$ contains at least minPts, mark $p$ as a core point and set it's cluster to $C_1$. 
+  * Otherwise, mark $p$ as a noise point and pick a new unvisited point.
+  
+* 2. Starting at cluster $C_1$ find all points $q_1,...,q_{n_1}$ that are reachable to at least one core point in the cluster.
+  * $n_1$ is the total number of points in the cluster.
+  * All said points are called density-connected and they fully identify the cluster.
+  
+* 3. Once a cluster is completely formed, pick any other unvisited point.
+  * If no points remain, we are done
+  * If the new point is a noise point, mark it as so and pick a new unvisited point.
+  * If the new point is a core point, mark it and set it's cluster to $C_i$ and repeat step 2 with $C_i$
+
+A few things to point out:
+
+* In step 2, the importance of points being reachable to a core point. This restriction is applied to prevent long lines of spare points being considered into the same cluster.
+* Even if a point is initially marked as a noise point, the steps in 2 can relabel the noise point as part of a cluster if it ends up being reachable to a core point.
+
+A quick example can be seen from a web app made from Naftali Harris. 
+
+You can test it out for yourself here! https://www.naftaliharris.com/blog/visualizing-dbscan-clustering/
+
+**Animation 1**: DBSCAN on a smiley face with $\epsilon = 1$ and $minPts = 4$ 
+
+![](`r here::here("Figs","dbscan_smile.gif")`)
+
+## 2.3: The dataset
+
+The dataset I've chosen to apply DBSCAN on is a clinical dataset that contains medical information regarding cardiovascular disease across 14 attributes over 303 subjects.
+
+Data was collected at the Cleveland Clinic Foundation.
+  
+This data set in particular has been used to test and verify developments in machine learning algorithms and is currently stored on the UCI Machine Learning Repository.
+
+It turns out that this data set has the information we need to test out DBSCAN:
+
+* It contains 3 common risk factors for cardiovascular disease.
+  * Age, resting blood pressure, and serum cholesterol levels.
+* It contains variables to potentiality test for proportions after clustering.
+  * Sex, chest pain level, and presents of heart disease.
+  
+The above six variables will be the ones we focus on.
+
+# 3.0: Statistical analysis
+
+## 3.1: The workflow
+
+**Picking variables**
+
+First, we will start by taking two variables at a time. This makes visualization and interpretation easier.
+
+That being said, we start of by picking a pair of variables from age, resting blood pressure, and serum cholesterol levels.
+
+We then scale each variable. This ensures that equal weight is being applied to both attributes so that the variables with higher ranges (cholesterol or blood pressure) don't dominate ones with lower ranges (age).
+ 
+ **Obtain the best parameters**
+ 
+Next we will find the best values for $\epsilon$ and minPts.
+ 
+We set minPts to be 3 (one plus the dimension). This is the common approach, and although it implies that we may end up with small clusters (of size 3), optimizing $\epsilon$ should prevent too many from being created.
+ 
+To optimize $\epsilon$ we produce a **3-Nearest Neighbor Distance Plot**. This plot sorts the points by their minimum distance to some other point who is a **core point**. This distance is called the 3-nearest neighbor distance (3-NN distance). The sorted points are arranged on the x-axis, and the 3-NN distance are placed on the y-axis.
+
+The optimized value for $\epsilon$ is approximated by the x value which occurs at the middle of the bend (if it exists) in the 3-NN distance plot. The idea is that this value should separate distances that happen frequently over those that happen rarely. The end result will capture different clusters, even if they appear like they are close enough to be considered just one cluster.
+
+ **Run DBSCAN**
+ 
+With these parameters we compute the cluster labels using DBSCAN and then project the labels back on to the (unscaled) data corresponding to the two variables we picked.
+
+ 
+ **Test the clusters**
+ 
+When more than one cluster exists, we can test the proportions of the aforementioned variables.
+
+First, we stratify by cluster group. Then we perform a chi square test for independence. In the case that one of our clusters is small, then we can instead perform a Fisher's exact test. 
+
+If in the above we find something worth investigating (typically a p-value less than .2), we can go back to the original three variables (age, cholesterol, and blood pressure), and stratify by the variable we wish to further investigate.
+
+The idea is that if the second test is significant for one of the variables, then we have discovered a pre-existing relation ship in our data using DBSCAN.
+
+## 3.2: The results
+
+### 3.2.1: Age Verses Serum Cholesterol (ε=.65, minPts=3)
+
+First we produce the 3-NN distance plot.
+
+```{r}
+# Select the variables
+heart_cluster = heart %>% dplyr::select(chol, age)
+# Scale the variables
+heart_cluster = heart_cluster %>% scale()
+# Plot the 3-NN distances
+kNNdistplot(heart_cluster, 3)
+abline(h = .65, lty = 2)
+```
+
+Based on this plot, we pick $\epsilon$ to be .65. Of course minPts is set to 3, as previously mentioned.
+
+Now, we can perform DBSCAN and plot the clusters.
+
+```{r}
+# Perform DBSCAN
+scan = dbscan(heart_cluster,.65,3)
+# Extract the cluster labels
+clusters = scan$cluster
+# Merge labels back to the orignal data
+data = data.frame(heart,clusters)
+# Plot
+data %>% ggplot(aes(y=chol, x=age, color=as.factor(clusters))) + geom_point()+
+    scale_colour_manual(values=c("#D55E00","#0072B2","#E69F00"),
+                      labels=c("Noise","Cluster 1", "Cluster 2"),
+                      name = "Clusters") +
+  xlab("Age (Years)") + ylab("Serum Cholesterol (mg/dl)")
+```
+
+We see that DBSCAN has produced one large cluster, one smaller cluster, and some noise.
+
+Let's investigate a bit further.
+
+```{r}
+# Filter out noise points
+data_filt = data %>% filter(clusters!=0)
+# Make categorical variables into factors.
+data_filt = data_filt %>% mutate(cp=as.factor(cp),
+                       target=as.factor(target),
+                       sex=as.factor(sex),
+                       clusters=as.factor(clusters))
+# Give better names
+data_filt = data_filt %>% mutate(sex=ifelse(sex==0,"Female","Male"),
+                                 target=ifelse(target==0,"No Heart Disease","Heart Disease"),
+                                 clusters=ifelse(clusters==1,"Cluster 1","Cluster 2")) %>% 
+  rename(`Chest Pain Level` = cp, Sex=sex, Target=target)
+
+# Create a summary table stratified on the clusters.
+table_descriptives <- 
+  CreateTableOne(data = data_filt, vars = c("Sex","Chest Pain Level","Target"), strata = "clusters", test=TRUE, testExact = "fisher.test")
+
+kable(print(table_descriptives, missing = TRUE, showAllLevels = TRUE, print = FALSE,exact = c("Sex","Chest Pain Level","Target"))) %>% kable_styling(font_size = 9)
+```
+
+So the smaller cluster contains 100 percent females! 
+
+We will look into this after the next pair of variables for reasons that will become obvious.
+
+### 3.2.1: Resting Blood Pressure Verses Serum Cholesterol (ε=.65, minPts=3)
+
+3-Nearest Neighbor Distance Plot
+
+```{r}
+# Select the variables
+heart_cluster = heart %>% dplyr::select(chol, thalach)
+# Scale the variables
+heart_cluster = heart_cluster %>% scale()
+# Plot the 3-NN distances
+kNNdistplot(heart_cluster, 3)
+abline(h = .65, lty = 2)
+```
+
+Cluster Output from DBSCAN
+
+```{r}
+# Perform DBSCAN
+scan = dbscan(heart_cluster,.65,3)
+# Extract the cluster labels
+clusters = scan$cluster
+# Merge labels back to the orignal data
+data = data.frame(heart,clusters)
+# Plot
+data %>% ggplot(aes(y=chol, x=thalach, color=as.factor(clusters))) + geom_point()+
+  scale_colour_manual(values=c("#D55E00","#0072B2","#E69F00"),
+                      labels=c("Noise","Cluster 1", "Cluster 2"),
+                      name = "Clusters") +
+  xlab("Resting Blood Pressure") + ylab("Serum Cholesterol (mg/dl)")
+```
+
+Summary Statistics and Fisher Exact tests across clusters
+
+```{r}
+# Filter out noise points
+data_filt = data %>% filter(clusters!=0)
+# Make categorical variables into factors.
+data_filt = data_filt %>% mutate(cp=as.factor(cp),
+                       target=as.factor(target),
+                       sex=as.factor(sex),
+                       clusters=as.factor(clusters))
+# Give better names
+data_filt = data_filt %>% mutate(sex=ifelse(sex==0,"Female","Male"),
+                                 target=ifelse(target==0,"No Heart Disease","Heart Disease"),
+                                 clusters=ifelse(clusters==1,"Cluster 1","Cluster 2")) %>% 
+  rename(`Chest Pain Level` = cp, Sex=sex, Target=target)
+# Create a summary table stratified on the clusters.
+table_descriptives <- 
+  CreateTableOne(data = data_filt, vars = c("Sex","Chest Pain Level","Target"), strata = "clusters", test=TRUE, testExact = "fisher.test")
+# Print table
+kable(print(table_descriptives, missing = TRUE, showAllLevels = TRUE, print = FALSE,exact = c("Sex","Chest Pain Level","Target"))) %>% kable_styling(font_size = 9)
+```
+
+As with the first pair, we see that the smaller cluster contains 100 percent females too.
+
+Let's look into this further by create another summary table, but stratified on sex. We will then look at the original three continuous variables.
+
+```{r}
+# Give better names
+data_format = heart %>% rename(`Age (Years)`=age,
+                              `Serum Cholesterol (mg/dl)`=chol,
+                              `Resting Blood Pressure`=trestbps) %>% 
+  mutate(sex=ifelse(sex==0,"Female","Male"),target=ifelse(target==0,"No Heart Disease","Heart Disease"))
+# Create table
+table_descriptives <- 
+  CreateTableOne(data = data_format, vars = c("Age (Years)","Serum Cholesterol (mg/dl)","Resting Blood Pressure"), strata = "sex", test=TRUE)
+# Print table
+kable(print(table_descriptives, missing = TRUE, showAllLevels = TRUE, print = FALSE)) %>% kable_styling(font_size = 9)
+```
+
+Thus, we can see that the smaller cluster is uncovering a relationships that exist in our data set.
+
+That is:
+
+* Females have much higher serum Cholesterol levels on average
+* Females are slightly older on average.
+
+### 3.2.3: Age Verses Resting Blood Pressure (ε=.35, minPts=3)
+
+3-Nearest Neighbor Distance Plot
+
+```{r}
+# Select the variables
+heart_cluster = heart %>% dplyr::select(age, thalach)
+# Scale the variables
+heart_cluster = heart_cluster %>% scale()
+
+# Plot the 3-NN distances
+kNNdistplot(heart_cluster, 3)
+abline(h = .35, lty = 2)
+```
+
+Cluster Output from DBSCAN
+
+```{r}
+# Perform DBSCAN
+scan = dbscan(heart_cluster,.35,3)
+# Extract the cluster labels
+clusters = scan$cluster
+# Merge labels back to the orignal data
+data = data.frame(heart,clusters)
+# Plot
+data %>% ggplot(aes(y=thalach, x=age, color=as.factor(clusters))) + geom_point() +
+    scale_colour_manual(values=c("#D55E00","#0072B2","#E69F00"),
+                      labels=c("Noise", "Cluster 1","Cluster 2"),
+                      name = "Clusters") +
+  ylab("Resting Blood Pressure") + xlab("Age (Years)")
+```
+
+This time we obtain a larger second cluster.
+
+Summary Statistics and Fisher Exact tests across clusters
+
+```{r}
+# Filter out noise points
+data_filt = data %>% filter(clusters!=0)
+# Make categorical variables into factors.
+data_filt = data_filt %>% mutate(cp=as.factor(cp),
+                       target=as.factor(target),
+                       sex=as.factor(sex),
+                       clusters=as.factor(clusters))
+# Give better names
+data_filt = data_filt %>% mutate(sex=ifelse(sex==0,"Female","Male"),
+                                 target=ifelse(target==0,"No Heart Disease","Heart Disease"),
+                                 clusters=ifelse(clusters==1,"Cluster 1","Cluster 2")) %>% 
+  rename(`Chest Pain Level` = cp, Sex=sex, Target=target)
+# Create a summary table stratified on the clusters.
+table_descriptives <- 
+  CreateTableOne(data = data_filt, vars = c("Sex","Chest Pain Level","Target"), strata = "clusters", test=TRUE, testExact = "fisher.test")
+# Print table
+kable(print(table_descriptives, missing = TRUE, showAllLevels = TRUE, print = FALSE,exact = c("Sex","Chest Pain Level","Target"))) %>% kable_styling(font_size = 9)
+```
+
+and find that 78% of the subjects in this cluster do not have a heart disease. Let's investigate further.
+
+```{r}
+# Create a summary table stratified on the presence of heart disease
+table_descriptives <- 
+  CreateTableOne(data = data_format, vars = c("Age (Years)","Serum Cholesterol (mg/dl)","Resting Blood Pressure"), strata = "target", test=TRUE)
+# Print
+kable(print(table_descriptives, missing = TRUE, showAllLevels = TRUE, print = FALSE)) %>% kable_styling(font_size = 9)
+```
+
+Thus, similar to the first 2 pairs, we also find that the smaller cluster is revealing relationships that exist in the data:
+
+* On average, subjects without a heart disease are older by 4 years.
+* On average, subjects without a heart disease have slightly higher resting blood pressure.
+
+Overall, we conclude that DBSCAN is doing a relatively good job at giving us cluster that have meaning so long that we provide optimized parameters.
+
+# 4.0 Discussion
+
+## 4.1 Limitations
+
+While DBSCAN is great, because we don't have to give it the number of clusters before hand, if one is not careful in deciding appropriate values for $\epsilon$ and minPts, they'd end up with either many uninterpretable clusters or just one large cluster.
+
+Secondly, if one uses Euclidean distance as a distance measure (which is most likely the case), then performing DBSCAN at higher dimensions will likely result is no clusters at all. This is known as the **curse of dimensional** where the Euclidean distance between points becomes smaller in a higher dimensional space.
+
+Lastly, one of the biggest struggles for DBSCAN is being able to detect clusters that vary in terms of denseness. This mostly comes down to the fact that we wouldn't be able to find that sweet-spot value for $\epsilon$ (no obvious bend in the k-NN distance plot).
+
+## 4.2 Assumptions
+
+One nice thing about DBSCAN is that it only assumes that the clusters we wish to form consist of a high density of observations. 
+
+This means that if your data points are spread out enough, DBSCAN might only return one cluster and some noise. This, however, may not necessarily be a bad thing, as it could indicate that no clusters should exist in your data in the first place.
+
+## 4.3 Alternatives
+
+We've discussed other clustering methods, however there are many extensions to the DBSCAN algorithm
+
+**Ordering points to identify the clustering structure (OPTICS)**
+
+OPTICS is an density based algorithm that aims to fix DBSCAN's limitation of not being able to detect clusters with various densities.
+
+It does this by measuring two special distance measures called a core distance and reachability distance. The points are then sorted by their reachability distance per cluster and a reachability-plot is produced. The more narrow a curve on the reachability-plot is, the more dense the cluster corresponding to that curve is.
+
+
+**Figure 2**: Example of the OPTICS workflow
+
+![Note that the orange colored points and curves represnt noise.](`r here::here("Figs","OPTICS.png")`)
+
+
+**Hierarchical DBSCAN (HDBSCAN)**
+
+HDBSCAN uses reachability distance similar to OPTICS, but also integrates concepts from hierarchical based clustering as well.
+
+The end goal is to produce a **condensed cluster tree** and use it to obtain the cluster labels.
+
+**Figure 3**: Example of a condensed cluster tree
+
+![Note that clusters can not be chosen as descendants from each other.](`r here::here("Figs","HDBSCAN.png")`)
+
+### 4.3.1 Which is best used in practice?
+
+When density based clustering is used, typically DBSCAN is the go to algorithm. 
+
+In cases where your data has various clusters of different densities, then using either OPTICS or HDBSCAN is viable, especially since $\epsilon$ no longer needs to be provided by the user.
+
+In the case where you have a special kind of data, like images or geographical data. Then a more advanced, and perhaps specialized algorithm is what may be needed.
+
+# 5.0 Applications
+
+Below is a list of some relevant applications related to the clinical field.
+
+In general, having highly dense data and the appropriate variables to cluster on is usually enough for DBSCAN to be applicable.
+
+* Classification of brain MR images [1]
+* Clustering clinical trials with similar eligibility criteria features [2]
+* Clustering patients by the length of hospital stay [3]
+
+## 5.1 Automatic swallow detection [4]
+
+There is one paper that I found interesting and would like to go over in more detail.
+
+It involves using DBSCAN to cluster on data relating to sound waves of subjects who are talking and swallowing, some of which may have troubles swallowing.
+
+The workflow is as follows:
+
+Start by recording the 2-dimensional vibration data over some period of time. Data is collected once every millisecond.
+
+For each axis, two variables are computed in 200ms intervals:
+
+* 1.) The sample standard deviation, defined the usual way.
+* 2.) The waveform fractal dimension, defined to be $WD = \frac{\log{L}}{\log{d}}$, with
+    * L being the total length of the waveform, ie. the sum of distances between successive points.
+    * d is the diameter of the waveform, ie. the max distance between the starting point and any other point in the waveform.
+    
+The choice of these variables are significant since other studies had shown that while no swallows are detected, the values of these variables remain at some constant baseline value, but will rise by quite some amount once a swallow is present.
+
+The end result is a **cluster signal** where a high signal indicates a swallow, while a low signal indicates noise or no swallow. This cluster signal was projected back onto the waveform data and compared to cut offs set by a specialist.
+
+**Figure 4**: Comparison of DBSCAN for healthy and unhealthy swallows
+
+![](`r here::here("Figs","DBSCAN_APP.png")`)
+
+## 5.2 Future directions
+
+As a result of doing research on density based clustering, I've thought of one interesting direction to move forward. 
+
+An interactive (Shiny) app that includes all the methods algorithms in this report, plus more.
+
+There have been many packages and frameworks created already to gather many clustering algorithms together, this app would take a different approach.
+
+In particular, a user could upload a dataset and then interactively and dynamically select various algorithms and the parameters corresponding to them to quickly compare the outputs.
+
+In cases like DBSCAN where parameters should be optimized, tips and visual guides can be provided to make this choice. 
+
+In cases like OPTICS and HDBSCAN, corresponding plots can be produced (reachability-plots and condensed cluster tree plots).
+
+Finally, detailed documentation for each method and algorithm would be provided to help guide the user to pick the best approach for their data.
+
+Overall this tool could be used by anyone (with or without programming experience) to effectively explore clustering with their data.
+
+# 6.0 Summary
+
+Overall, density based clustering is a useful unsupervised data mining technique with lots of potential, especially in the clinical field. We showed one example with a simple workflow that managed to uncover existing relationships in the data using DBSCAN. We also learned about the limitations of DBSCAN, and some alternatives that aim to fix these limitations. Finally we dove into some applications and how DBSCAN is currently being used in practice. 
+
+# 7.0 References
+
+1. Tianyong Hao,Alexander Rusanov,Mary Regina Boland,Chunhua Weng, "Clustering clinical trials with similar eligibility criteria features"; Journal of Biomedical Informatics; Elsevier; December 2014.
+
+2. F. Baselice, L. Coppolino, S. D'Antonio, G. Ferraioli and L. Sgaglione, "A DBSCAN based approach for jointly segment and classify brain MR images," 2015 37th Annual International Conference of the IEEE Engineering in Medicine and Biology Society (EMBC), Milan, 2015, pp. 2993-2996.
+
+3. V. U. Panchami and N. Radhika, "A novel approach for predicting the length of hospital stay with DBSCAN and supervised classification algorithms," The Fifth International Conference on the Applications of Digital Information and Web Technologies (ICADIWT 2014), Bangalore, 2014, pp. 207-212.
+
+4. Joshua M. Dudik, Atsuko Kurosu, James L Coyle, and Ervin Sejdić. A Comparative Analysis of DBSCAN, K-Means, and Quadratic Variation Algorithms for Automatic Identification of Swallows from Swallowing Accelerometry Signals; 2015 April 1; 59: 10–18 
+
